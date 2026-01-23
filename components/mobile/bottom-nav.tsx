@@ -17,7 +17,7 @@ export function BottomNav() {
   const pathname = usePathname()
 
   // Determine active state for "More" section
-  const moreRoutes = ["/income", "/budgets", "/achievements", "/settings", "/more"]
+  const moreRoutes = ["/income", "/budgets", "/achievements", "/settings", "/payments", "/more"]
   const isMoreActive = moreRoutes.some((route) => pathname.startsWith(route))
 
   return (

@@ -1,7 +1,7 @@
 {
-  "name": "Cheddar - Smart Money",
-  "short_name": "Cheddar",
-  "description": "Track spending, crush goals, and level up your financial game",
+  "name": "Finzy - Smart Money & Fast Payments",
+  "short_name": "Finzy",
+  "description": "Track spending, crush goals, and pay instantly via UPI with AI-powered insights",
   "start_url": "/dashboard",
   "display": "standalone",
   "background_color": "#1a1a1f",

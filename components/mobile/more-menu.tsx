@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
-import { Wallet, Target, Trophy, Settings, LogOut, ChevronRight } from "lucide-react"
+import { Wallet, Target, Trophy, Settings, LogOut, ChevronRight, Send } from "lucide-react"
 import { MobileHeader } from "./mobile-header"
 
 const menuSections = [
@@ -12,6 +12,7 @@ const menuSections = [
     items: [
       { href: "/income", label: "Income", icon: Wallet, description: "Track your earnings" },
       { href: "/budgets", label: "Budgets", icon: Target, description: "Manage spending limits" },
+      { href: "/payments", label: "UPI Payments", icon: Send, description: "Pay via UPI" },
       { href: "/achievements", label: "Achievements", icon: Trophy, description: "View your milestones" },
     ],
   },
@@ -73,7 +74,7 @@ export function MoreMenu() {
       </div>
 
       {/* App version */}
-      <p className="text-center text-xs text-muted-foreground pt-4">Cheddar v1.0.0</p>
+      <p className="text-center text-xs text-muted-foreground pt-4">Finzy v1.0.0 - Pay & Track</p>
     </div>
   )
 }

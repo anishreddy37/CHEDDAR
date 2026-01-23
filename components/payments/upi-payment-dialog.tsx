@@ -1,0 +1,312 @@
+"use client"
+
+import React, { useState } from "react"
+import { useRouter } from "next/navigation"
+import { createClient } from "@/lib/supabase/client"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { expenseCategories } from "@/lib/categories"
+import { Loader2, QrCode, Smartphone, Hash } from "lucide-react"
+import { constructUPIUrl, mobileToUPI, isValidUPI, initiateUPIPayment } from "@/lib/upi"
+
+type PaymentMode = "mobile" | "upi" | "qr"
+
+interface UPIPaymentDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  currency: string
+}
+
+export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDialogProps) {
+  const [mode, setMode] = useState<PaymentMode>("mobile")
+  const [mobileNumber, setMobileNumber] = useState("")
+  const [upiId, setUpiId] = useState("")
+  const [qrCode, setQrCode] = useState("")
+  const [amount, setAmount] = useState("")
+  const [category, setCategory] = useState("")
+  const [payeeName, setPayeeName] = useState("")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const router = useRouter()
+  const supabase = createClient()
+
+  const handlePaymentInitiate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    setLoading(true)
+
+    try {
+      // Validate inputs
+      const amountNum = Number.parseFloat(amount)
+      if (Number.isNaN(amountNum) || amountNum <= 0) {
+        throw new Error("Please enter a valid amount")
+      }
+
+      if (!category) {
+        throw new Error("Please select a category")
+      }
+
+      let finalUpiId = ""
+      let finalPayeeName = payeeName
+
+      // Determine UPI ID based on mode
+      if (mode === "mobile") {
+        if (!mobileNumber.trim()) throw new Error("Please enter a mobile number")
+        finalUpiId = mobileToUPI(mobileNumber)
+      } else if (mode === "upi") {
+        if (!upiId.trim()) throw new Error("Please enter a UPI ID")
+        if (!isValidUPI(upiId)) throw new Error("Invalid UPI ID format")
+        finalUpiId = upiId
+      } else if (mode === "qr") {
+        if (!qrCode.trim()) throw new Error("Please enter QR code data")
+        // In a real app, this would parse the QR code
+        if (!isValidUPI(qrCode)) throw new Error("Invalid QR code data")
+        finalUpiId = qrCode
+      }
+
+      // Get user
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      if (!user) throw new Error("You must be logged in")
+
+      // Step 1: Create expense record with UPI payment info
+      const { data: expenseData, error: expenseError } = await supabase
+        .from("expenses")
+        .insert({
+          user_id: user.id,
+          title: `UPI Payment to ${finalPayeeName || "Payee"}`,
+          amount: amountNum,
+          category,
+          date: new Date().toISOString().split("T")[0],
+        })
+        .select("id")
+        .single()
+
+      if (expenseError) throw expenseError
+
+      // Step 2: Create UPI payment record
+      const transactionId = `FINZY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+      const { error: upiError } = await supabase.from("upi_payments").insert({
+        user_id: user.id,
+        expense_id: expenseData?.id,
+        upi_id: finalUpiId,
+        payee_name: finalPayeeName || "UPI Payee",
+        amount: amountNum,
+        category,
+        currency,
+        payment_method: "UPI",
+        status: "initiated",
+        transaction_id: transactionId,
+      })
+
+      if (upiError) throw upiError
+
+      // Step 3: Construct and initiate UPI payment
+      const upiUrl = constructUPIUrl({
+        upiId: finalUpiId,
+        payeeName: finalPayeeName,
+        amount: amountNum,
+        currency,
+        transactionRef: transactionId,
+        category,
+      })
+
+      // Reset form
+      setMobileNumber("")
+      setUpiId("")
+      setQrCode("")
+      setAmount("")
+      setCategory("")
+      setPayeeName("")
+
+      onOpenChange(false)
+      router.refresh()
+
+      // Redirect to UPI app (this will open Google Pay, PhonePe, etc. if available)
+      initiateUPIPayment(upiUrl)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
+      setMobileNumber("")
+      setUpiId("")
+      setQrCode("")
+      setAmount("")
+      setCategory("")
+      setPayeeName("")
+      setError(null)
+      setMode("mobile")
+    }
+    onOpenChange(newOpen)
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>Pay via UPI</DialogTitle>
+          <DialogDescription>Send money instantly and auto-track as expense</DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handlePaymentInitiate} className="space-y-4">
+          {error && <div className="text-sm text-destructive bg-destructive/10 p-3 rounded-lg">{error}</div>}
+
+          {/* Payment Mode Selection */}
+          <div className="space-y-2">
+            <Label>Payment Method</Label>
+            <div className="grid grid-cols-3 gap-2">
+              <Button
+                type="button"
+                variant={mode === "mobile" ? "default" : "outline"}
+                onClick={() => setMode("mobile")}
+                disabled={loading}
+                className="flex flex-col items-center gap-1 h-auto py-2"
+              >
+                <Smartphone className="h-4 w-4" />
+                <span className="text-xs">Mobile</span>
+              </Button>
+              <Button
+                type="button"
+                variant={mode === "upi" ? "default" : "outline"}
+                onClick={() => setMode("upi")}
+                disabled={loading}
+                className="flex flex-col items-center gap-1 h-auto py-2"
+              >
+                <Hash className="h-4 w-4" />
+                <span className="text-xs">UPI ID</span>
+              </Button>
+              <Button
+                type="button"
+                variant={mode === "qr" ? "default" : "outline"}
+                onClick={() => setMode("qr")}
+                disabled={loading}
+                className="flex flex-col items-center gap-1 h-auto py-2"
+              >
+                <QrCode className="h-4 w-4" />
+                <span className="text-xs">QR Code</span>
+              </Button>
+            </div>
+          </div>
+
+          {/* Dynamic Input Based on Mode */}
+          {mode === "mobile" && (
+            <div className="space-y-2">
+              <Label htmlFor="mobile">Mobile Number</Label>
+              <Input
+                id="mobile"
+                placeholder="Enter 10-digit mobile number"
+                value={mobileNumber}
+                onChange={(e) => setMobileNumber(e.target.value)}
+                maxLength={10}
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">We'll convert this to mobile@upi format</p>
+            </div>
+          )}
+
+          {mode === "upi" && (
+            <div className="space-y-2">
+              <Label htmlFor="upi">UPI ID</Label>
+              <Input
+                id="upi"
+                placeholder="e.g., username@bank or 9876543210@upi"
+                value={upiId}
+                onChange={(e) => setUpiId(e.target.value)}
+                disabled={loading}
+              />
+            </div>
+          )}
+
+          {mode === "qr" && (
+            <div className="space-y-2">
+              <Label htmlFor="qr">QR Code Data</Label>
+              <Input
+                id="qr"
+                placeholder="Paste QR code content here"
+                value={qrCode}
+                onChange={(e) => setQrCode(e.target.value)}
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">Typically starts with upi://pay?</p>
+            </div>
+          )}
+
+          {/* Payee Name */}
+          <div className="space-y-2">
+            <Label htmlFor="payee">Payee Name (Optional)</Label>
+            <Input
+              id="payee"
+              placeholder="Who are you paying?"
+              value={payeeName}
+              onChange={(e) => setPayeeName(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+
+          {/* Amount */}
+          <div className="space-y-2">
+            <Label htmlFor="amount">Amount ({currency})</Label>
+            <Input
+              id="amount"
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="0.00"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              disabled={loading}
+            />
+          </div>
+
+          {/* Category */}
+          <div className="space-y-2">
+            <Label htmlFor="category">Expense Category</Label>
+            <Select value={category} onValueChange={setCategory} disabled={loading}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select category" />
+              </SelectTrigger>
+              <SelectContent>
+                {expenseCategories.map((cat) => (
+                  <SelectItem key={cat.id} value={cat.id}>
+                    <div className="flex items-center gap-2">
+                      <cat.icon className={`h-4 w-4 ${cat.color}`} />
+                      {cat.name}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={loading}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={loading}>
+              {loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Processing...
+                </>
+              ) : (
+                "Pay via UPI"
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}

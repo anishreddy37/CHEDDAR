@@ -15,14 +15,14 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: "Cheddar - Smart Money",
-  description: "Track spending, crush goals, and level up your financial game with AI-powered insights",
+  title: "Finzy - Smart Money & Fast Payments",
+  description: "Track spending, crush goals, and pay instantly via UPI with AI-powered financial insights",
   generator: "v0.app",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Cheddar",
+    title: "Finzy",
   },
   formatDetection: {
     telephone: false,

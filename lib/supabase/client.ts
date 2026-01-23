@@ -5,7 +5,18 @@ let client: ReturnType<typeof createBrowserClient> | null = null
 export function createClient() {
   if (client) return client
 
-  client = createBrowserClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!)
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  if (!url || !key) {
+    console.error("[v0] Missing Supabase environment variables:", {
+      hasUrl: !!url,
+      hasKey: !!key,
+    })
+    throw new Error("Missing Supabase configuration (NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY)")
+  }
+
+  client = createBrowserClient(url, key)
 
   return client
 }
