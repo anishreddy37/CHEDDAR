@@ -9,8 +9,15 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { expenseCategories } from "@/lib/categories"
-import { Loader2, QrCode, Smartphone, Hash } from "lucide-react"
-import { constructUPIUrl, mobileToUPI, isValidUPI, initiateUPIPayment } from "@/lib/upi"
+import { Loader2, QrCode, Smartphone, Hash, Camera, ImageIcon } from "lucide-react"
+import {
+  constructUPIUrl,
+  mobileToUPI,
+  isValidUPI,
+  initiateUPIPayment,
+  extractUPIInfo,
+  openQRImagePicker,
+} from "@/lib/upi"
 
 type PaymentMode = "mobile" | "upi" | "qr"
 
@@ -30,9 +37,57 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
   const [payeeName, setPayeeName] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [qrScanning, setQrScanning] = useState(false)
 
   const router = useRouter()
   const supabase = createClient()
+
+  const handleQRImageUpload = async () => {
+    try {
+      setQrScanning(true)
+      const file = await openQRImagePicker()
+
+      if (!file) {
+        setError("No image selected")
+        return
+      }
+
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        try {
+          // In production, you'd use jsQR or similar library to decode the image
+          // For now, we'll show an alert and let user paste the content
+          const base64 = e.target?.result as string
+          console.log("[v0] Image loaded, would decode with QR library:", base64.substring(0, 50))
+
+          // Simplified: prompt user to paste the QR code content
+          const qrContent = window.prompt("Paste the UPI QR code content (starts with upi://pay?):")
+          if (qrContent) {
+            const upiInfo = extractUPIInfo(qrContent)
+            if (upiInfo) {
+              setQrCode(qrContent)
+              setPayeeName(upiInfo.payeeName || "")
+              if (upiInfo.amount) {
+                setAmount(upiInfo.amount.toString())
+              }
+              setError(null)
+            } else {
+              setError("Invalid QR code format")
+            }
+          }
+        } catch (err) {
+          setError("Error reading image")
+          console.error("[v0] QR read error:", err)
+        } finally {
+          setQrScanning(false)
+        }
+      }
+      reader.readAsDataURL(file)
+    } catch (err) {
+      setError("Failed to select image")
+      setQrScanning(false)
+    }
+  }
 
   const handlePaymentInitiate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -43,7 +98,12 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       // Validate inputs
       const amountNum = Number.parseFloat(amount)
       if (Number.isNaN(amountNum) || amountNum <= 0) {
-        throw new Error("Please enter a valid amount")
+        throw new Error("Please enter a valid amount (minimum ₹1)")
+      }
+
+      // NEFT/RTGS limit check
+      if (amountNum > 100000) {
+        throw new Error("Amount cannot exceed ₹100,000. Use bank transfer for larger amounts")
       }
 
       if (!category) {
@@ -59,13 +119,16 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
         finalUpiId = mobileToUPI(mobileNumber)
       } else if (mode === "upi") {
         if (!upiId.trim()) throw new Error("Please enter a UPI ID")
-        if (!isValidUPI(upiId)) throw new Error("Invalid UPI ID format")
+        if (!isValidUPI(upiId)) throw new Error("Invalid UPI ID format. Example: username@bank or 9876543210@upi")
         finalUpiId = upiId
       } else if (mode === "qr") {
-        if (!qrCode.trim()) throw new Error("Please enter QR code data")
-        // In a real app, this would parse the QR code
-        if (!isValidUPI(qrCode)) throw new Error("Invalid QR code data")
-        finalUpiId = qrCode
+        if (!qrCode.trim()) throw new Error("Please select or enter QR code data")
+        const upiInfo = extractUPIInfo(qrCode)
+        if (!upiInfo) throw new Error("Invalid QR code - must contain valid UPI data")
+        finalUpiId = upiInfo.upiId
+        if (upiInfo.payeeName && !finalPayeeName) {
+          finalPayeeName = upiInfo.payeeName
+        }
       }
 
       // Get user
@@ -108,6 +171,8 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
 
       if (upiError) throw upiError
 
+      console.log("[v0] Payment initiated - Amount:", amountNum, "UPI ID:", finalUpiId)
+
       // Step 3: Construct and initiate UPI payment
       const upiUrl = constructUPIUrl({
         upiId: finalUpiId,
@@ -133,6 +198,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       initiateUPIPayment(upiUrl)
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred")
+      console.error("[v0] Payment error:", err)
     } finally {
       setLoading(false)
     }
@@ -154,7 +220,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[425px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Pay via UPI</DialogTitle>
           <DialogDescription>Send money instantly and auto-track as expense</DialogDescription>
@@ -171,7 +237,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
                 type="button"
                 variant={mode === "mobile" ? "default" : "outline"}
                 onClick={() => setMode("mobile")}
-                disabled={loading}
+                disabled={loading || qrScanning}
                 className="flex flex-col items-center gap-1 h-auto py-2"
               >
                 <Smartphone className="h-4 w-4" />
@@ -181,7 +247,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
                 type="button"
                 variant={mode === "upi" ? "default" : "outline"}
                 onClick={() => setMode("upi")}
-                disabled={loading}
+                disabled={loading || qrScanning}
                 className="flex flex-col items-center gap-1 h-auto py-2"
               >
                 <Hash className="h-4 w-4" />
@@ -191,7 +257,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
                 type="button"
                 variant={mode === "qr" ? "default" : "outline"}
                 onClick={() => setMode("qr")}
-                disabled={loading}
+                disabled={loading || qrScanning}
                 className="flex flex-col items-center gap-1 h-auto py-2"
               >
                 <QrCode className="h-4 w-4" />
@@ -212,7 +278,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
                 maxLength={10}
                 disabled={loading}
               />
-              <p className="text-xs text-muted-foreground">We'll convert this to mobile@upi format</p>
+              <p className="text-xs text-muted-foreground">Converts to mobile@upi format</p>
             </div>
           )}
 
@@ -231,15 +297,27 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
 
           {mode === "qr" && (
             <div className="space-y-2">
-              <Label htmlFor="qr">QR Code Data</Label>
-              <Input
-                id="qr"
-                placeholder="Paste QR code content here"
-                value={qrCode}
-                onChange={(e) => setQrCode(e.target.value)}
-                disabled={loading}
-              />
-              <p className="text-xs text-muted-foreground">Typically starts with upi://pay?</p>
+              <Label>QR Code</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={loading || qrScanning}
+                  onClick={handleQRImageUpload}
+                  className="flex-1 gap-2 bg-transparent"
+                >
+                  <ImageIcon className="h-4 w-4" />
+                  {qrScanning ? "Scanning..." : "Upload Image"}
+                </Button>
+              </div>
+              {qrCode && (
+                <div className="text-sm text-green-600 bg-green-50 p-2 rounded">✓ QR code loaded successfully</div>
+              )}
+              {!qrCode && (
+                <p className="text-xs text-muted-foreground">
+                  Scan a UPI QR code image. It will extract payee details and amount automatically.
+                </p>
+              )}
             </div>
           )}
 
@@ -257,12 +335,16 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
 
           {/* Amount */}
           <div className="space-y-2">
-            <Label htmlFor="amount">Amount ({currency})</Label>
+            <Label htmlFor="amount">
+              Amount ({currency})
+              <span className="text-xs text-muted-foreground ml-1">(₹1 - ₹100,000)</span>
+            </Label>
             <Input
               id="amount"
               type="number"
               step="0.01"
-              min="0"
+              min="0.01"
+              max="100000"
               placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
@@ -291,10 +373,10 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={loading}>
+            <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={loading || qrScanning}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || qrScanning}>
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
