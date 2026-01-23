@@ -1,6 +1,7 @@
 /**
- * UPI Payment utilities
+ * UPI Payment utilities - SECURITY CRITICAL
  * Constructs UPI intent URLs for redirecting to UPI apps
+ * DO NOT store payment records until payment succeeds
  */
 
 export interface UPIPaymentParams {
@@ -32,6 +33,11 @@ export function constructUPIUrl(params: UPIPaymentParams): string {
     throw new Error("Amount must be between 0.01 and 100000")
   }
 
+  // Validate UPI ID format
+  if (!isValidUPI(upiId)) {
+    throw new Error(`Invalid UPI ID format: ${upiId}`)
+  }
+
   // Encode parameters to handle special characters
   const pa = encodeURIComponent(upiId)
   const pn = encodeURIComponent(payeeName)
@@ -53,40 +59,60 @@ export function constructUPIUrl(params: UPIPaymentParams): string {
 }
 
 /**
- * Converts a mobile number to UPI ID format
- * Example: 9876543210 -> 9876543210@upi
+ * NOTE: Direct mobile number to UPI conversion is NOT SUPPORTED
+ * Each UPI ID is linked to a specific bank/provider account
+ * Simply converting mobile@upi is invalid and will be rejected by UPI apps
+ * 
+ * Users MUST provide their actual UPI ID which can be found in their:
+ * - Bank app (Settings > UPI ID / My UPI)
+ * - Payment app (Google Pay, PhonePe, Paytm profile)
+ * Example valid UPI IDs: username@okhdfcbank, username@okaxis, user@google-pay
  */
 export function mobileToUPI(mobileNumber: string): string {
-  // Remove any non-digit characters
-  const cleaned = mobileNumber.replace(/\D/g, "")
-
-  // Validate Indian mobile number (10 digits)
-  if (cleaned.length !== 10) {
-    throw new Error("Invalid mobile number - must be 10 digits")
-  }
-
-  const firstDigit = cleaned[0]
-  if (!["6", "7", "8", "9"].includes(firstDigit)) {
-    throw new Error("Invalid Indian mobile number - must start with 6, 7, 8, or 9")
-  }
-
-  return `${cleaned}@upi`
+  throw new Error(
+    "Mobile number alone cannot be converted to UPI ID. Please use the UPI ID option instead and enter your registered UPI ID from your bank or payment app."
+  )
 }
 
 /**
- * Validates UPI ID format
- * Valid formats: username@bank, 9876543210@upi, etc.
+ * Validates UPI ID format - SECURITY CRITICAL
+ * Valid formats: username@bankname, 9876543210@upi, mobile@provider
+ * Must follow: [alphanumeric._-]+@[alphanumeric]+
  */
 export function isValidUPI(upiId: string): boolean {
-  const upiRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/
-  return upiRegex.test(upiId)
+  // Strict UPI ID format validation
+  const upiRegex = /^[a-zA-Z0-9._-]{3,}@[a-zA-Z0-9]{2,}$/
+
+  if (!upiRegex.test(upiId)) {
+    console.warn("[v0] Invalid UPI format:", upiId)
+    return false
+  }
+
+  // Additional validation: check for common UPI providers or mobile number
+  const [username, provider] = upiId.split("@")
+
+  // If username looks like a mobile number, validate it
+  if (/^\d{10}$/.test(username)) {
+    const firstDigit = username[0]
+    if (!["6", "7", "8", "9"].includes(firstDigit)) {
+      console.warn("[v0] Invalid mobile number in UPI:", username)
+      return false
+    }
+  }
+
+  return true
 }
 
 /**
- * Extracts payee info from UPI QR code payload
+ * Extracts payee info from UPI QR code payload - SECURITY FIX
  * QR code typically contains: upi://pay?pa=<UPI>&pn=<NAME>&...
+ * Validates extracted UPI ID format
  */
-export function extractUPIInfo(qrPayload: string): { upiId: string; payeeName?: string; amount?: number } | null {
+export function extractUPIInfo(qrPayload: string): {
+  upiId: string
+  payeeName?: string
+  amount?: number
+} | null {
   try {
     // Remove the upi:// prefix if present
     const payload = qrPayload.replace(/^upi:\/\//, "")
@@ -98,49 +124,26 @@ export function extractUPIInfo(qrPayload: string): { upiId: string; payeeName?: 
     const pn = params.get("pn") // payee name
     const am = params.get("am") // amount
 
-    if (!pa) return null
+    if (!pa) {
+      console.warn("[v0] No payee address (pa) in QR code")
+      return null
+    }
+
+    const upiId = decodeURIComponent(pa)
+
+    // Validate extracted UPI ID
+    if (!isValidUPI(upiId)) {
+      console.warn("[v0] Extracted UPI ID is invalid:", upiId)
+      return null
+    }
 
     return {
-      upiId: decodeURIComponent(pa),
+      upiId,
       payeeName: pn ? decodeURIComponent(pn) : undefined,
       amount: am ? parseFloat(am) : undefined,
     }
   } catch (error) {
     console.error("[v0] Error parsing QR code:", error)
-    return null
-  }
-}
-
-/**
- * Starts QR code scanner using device camera
- * Requires HTTPS and camera permissions
- */
-export async function startQRScanner(): Promise<string | null> {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "environment", // Use back camera on mobile
-      },
-    })
-
-    return new Promise((resolve) => {
-      // Create video element for stream
-      const video = document.createElement("video")
-      video.srcObject = stream
-      video.play()
-
-      // Stop scanning after 30 seconds
-      setTimeout(() => {
-        stream.getTracks().forEach((track) => track.stop())
-        resolve(null)
-      }, 30000)
-
-      // Here you'd normally use a QR code library like jsQR or ZXing
-      // For now, we'll trigger a file input as fallback
-      resolve(null)
-    })
-  } catch (error) {
-    console.error("[v0] Camera access denied:", error)
     return null
   }
 }
@@ -162,10 +165,12 @@ export function openQRImagePicker(): Promise<File | null> {
 }
 
 /**
- * Redirects to UPI app with payment URL
- * This is typically called after expense record is created
+ * Redirects to UPI app with payment URL - SECURITY NOTE
+ * IMPORTANT: Do NOT create expense records before this redirect
+ * Payment may fail or be cancelled by user
+ * Wait for callback/return to confirm successful payment
  */
 export function initiateUPIPayment(upiUrl: string): void {
-  console.log("[v0] Initiating UPI payment with URL:", upiUrl)
+  console.log("[v0] Initiating UPI payment (DO NOT record until success)")
   window.location.href = upiUrl
 }

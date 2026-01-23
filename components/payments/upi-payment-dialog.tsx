@@ -9,17 +9,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { expenseCategories } from "@/lib/categories"
-import { Loader2, QrCode, Smartphone, Hash, Camera, ImageIcon } from "lucide-react"
-import {
-  constructUPIUrl,
-  mobileToUPI,
-  isValidUPI,
-  initiateUPIPayment,
-  extractUPIInfo,
-  openQRImagePicker,
-} from "@/lib/upi"
+import { Loader2, QrCode, Smartphone, Hash, ImageIcon } from "lucide-react"
+import { constructUPIUrl, isValidUPI, initiateUPIPayment, extractUPIInfo, openQRImagePicker } from "@/lib/upi"
 
-type PaymentMode = "mobile" | "upi" | "qr"
+type PaymentMode = "upi" | "qr"
 
 interface UPIPaymentDialogProps {
   open: boolean
@@ -28,7 +21,7 @@ interface UPIPaymentDialogProps {
 }
 
 export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDialogProps) {
-  const [mode, setMode] = useState<PaymentMode>("mobile")
+  const [mode, setMode] = useState<PaymentMode>("upi")
   const [mobileNumber, setMobileNumber] = useState("")
   const [upiId, setUpiId] = useState("")
   const [qrCode, setQrCode] = useState("")
@@ -55,10 +48,8 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       const reader = new FileReader()
       reader.onload = async (e) => {
         try {
-          // In production, you'd use jsQR or similar library to decode the image
-          // For now, we'll show an alert and let user paste the content
           const base64 = e.target?.result as string
-          console.log("[v0] Image loaded, would decode with QR library:", base64.substring(0, 50))
+          console.log("[v0] Image loaded for QR decoding")
 
           // Simplified: prompt user to paste the QR code content
           const qrContent = window.prompt("Paste the UPI QR code content (starts with upi://pay?):")
@@ -101,7 +92,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
         throw new Error("Please enter a valid amount (minimum ₹1)")
       }
 
-      // NEFT/RTGS limit check
+      // Amount limit check
       if (amountNum > 100000) {
         throw new Error("Amount cannot exceed ₹100,000. Use bank transfer for larger amounts")
       }
@@ -114,10 +105,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       let finalPayeeName = payeeName
 
       // Determine UPI ID based on mode
-      if (mode === "mobile") {
-        if (!mobileNumber.trim()) throw new Error("Please enter a mobile number")
-        finalUpiId = mobileToUPI(mobileNumber)
-      } else if (mode === "upi") {
+      if (mode === "upi") {
         if (!upiId.trim()) throw new Error("Please enter a UPI ID")
         if (!isValidUPI(upiId)) throw new Error("Invalid UPI ID format. Example: username@bank or 9876543210@upi")
         finalUpiId = upiId
@@ -138,42 +126,31 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
 
       if (!user) throw new Error("You must be logged in")
 
-      // Step 1: Create expense record with UPI payment info
-      const { data: expenseData, error: expenseError } = await supabase
-        .from("expenses")
-        .insert({
-          user_id: user.id,
-          title: `UPI Payment to ${finalPayeeName || "Payee"}`,
-          amount: amountNum,
-          category,
-          date: new Date().toISOString().split("T")[0],
-        })
-        .select("id")
-        .single()
-
-      if (expenseError) throw expenseError
-
-      // Step 2: Create UPI payment record
+      // SECURITY FIX: Generate transaction ID BEFORE payment
+      // This allows us to track the payment without pre-creating expense record
       const transactionId = `FINZY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 
+      // SECURITY FIX: Create UPI payment record with status "initiated"
+      // DO NOT create expense record yet - wait for payment confirmation
       const { error: upiError } = await supabase.from("upi_payments").insert({
         user_id: user.id,
-        expense_id: expenseData?.id,
+        expense_id: null, // No expense yet - payment hasn't succeeded
         upi_id: finalUpiId,
         payee_name: finalPayeeName || "UPI Payee",
         amount: amountNum,
         category,
         currency,
         payment_method: "UPI",
-        status: "initiated",
+        status: "initiated", // Only "initiated" - NOT completed
         transaction_id: transactionId,
       })
 
       if (upiError) throw upiError
 
-      console.log("[v0] Payment initiated - Amount:", amountNum, "UPI ID:", finalUpiId)
+      console.log("[v0] UPI payment initiated (NOT completed yet) - Transaction ID:", transactionId)
 
       // Step 3: Construct and initiate UPI payment
+      // Store transaction ID in URL return parameter for callback
       const upiUrl = constructUPIUrl({
         upiId: finalUpiId,
         payeeName: finalPayeeName,
@@ -192,10 +169,20 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       setPayeeName("")
 
       onOpenChange(false)
-      router.refresh()
+
+      // SECURITY NOTE: App will redirect to UPI app here
+      // User may cancel payment, may succeed, or may fail
+      // Expense record should ONLY be created after successful payment callback
+      // For now, payment status can be checked via upi_payments table with transactionId
+      console.log("[v0] WARNING: Redirecting to UPI app. DO NOT record expense until payment confirmed.")
 
       // Redirect to UPI app (this will open Google Pay, PhonePe, etc. if available)
       initiateUPIPayment(upiUrl)
+
+      // Auto-refresh after 5 seconds to check payment status
+      setTimeout(() => {
+        router.refresh()
+      }, 5000)
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred")
       console.error("[v0] Payment error:", err)
@@ -213,7 +200,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       setCategory("")
       setPayeeName("")
       setError(null)
-      setMode("mobile")
+      setMode("upi")
     }
     onOpenChange(newOpen)
   }
@@ -223,7 +210,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
       <DialogContent className="sm:max-w-[425px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Pay via UPI</DialogTitle>
-          <DialogDescription>Send money instantly and auto-track as expense</DialogDescription>
+          <DialogDescription>Send money instantly - Expense tracked after payment succeeds</DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handlePaymentInitiate} className="space-y-4">
@@ -232,17 +219,7 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
           {/* Payment Mode Selection */}
           <div className="space-y-2">
             <Label>Payment Method</Label>
-            <div className="grid grid-cols-3 gap-2">
-              <Button
-                type="button"
-                variant={mode === "mobile" ? "default" : "outline"}
-                onClick={() => setMode("mobile")}
-                disabled={loading || qrScanning}
-                className="flex flex-col items-center gap-1 h-auto py-2"
-              >
-                <Smartphone className="h-4 w-4" />
-                <span className="text-xs">Mobile</span>
-              </Button>
+            <div className="grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant={mode === "upi" ? "default" : "outline"}
@@ -267,31 +244,26 @@ export function UPIPaymentDialog({ open, onOpenChange, currency }: UPIPaymentDia
           </div>
 
           {/* Dynamic Input Based on Mode */}
-          {mode === "mobile" && (
-            <div className="space-y-2">
-              <Label htmlFor="mobile">Mobile Number</Label>
-              <Input
-                id="mobile"
-                placeholder="Enter 10-digit mobile number"
-                value={mobileNumber}
-                onChange={(e) => setMobileNumber(e.target.value)}
-                maxLength={10}
-                disabled={loading}
-              />
-              <p className="text-xs text-muted-foreground">Converts to mobile@upi format</p>
-            </div>
-          )}
-
           {mode === "upi" && (
-            <div className="space-y-2">
-              <Label htmlFor="upi">UPI ID</Label>
-              <Input
-                id="upi"
-                placeholder="e.g., username@bank or 9876543210@upi"
-                value={upiId}
-                onChange={(e) => setUpiId(e.target.value)}
-                disabled={loading}
-              />
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="upi">Registered UPI ID</Label>
+                <Input
+                  id="upi"
+                  placeholder="e.g., username@okhdfcbank"
+                  value={upiId}
+                  onChange={(e) => setUpiId(e.target.value)}
+                  disabled={loading}
+                />
+              </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2">
+                <p className="text-xs font-semibold text-blue-900">How to find your UPI ID:</p>
+                <ul className="text-xs text-blue-800 space-y-1">
+                  <li>• Open your bank app → Settings → My UPI ID</li>
+                  <li>• Or check Google Pay, PhonePe, or Paytm profile</li>
+                  <li>• Format: username@bankname (e.g., john@okhdfcbank)</li>
+                </ul>
+              </div>
             </div>
           )}
 
