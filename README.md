@@ -1,2 +1,2 @@
-project is live at :[ finzyyyy.vercel.app
+project is live at :[Finzy
 ](https://finzyyyy.vercel.app)
